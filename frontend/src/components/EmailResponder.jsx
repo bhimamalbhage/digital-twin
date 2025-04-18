@@ -3,7 +3,6 @@ import React, { useState, useEffect } from "react";
 export default function EmailResponder() {
   const [emails, setEmails] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
-  const [response, setResponse] = useState("");
   const [editableResponse, setEditableResponse] = useState("");
   const [threadContext, setThreadContext] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -27,18 +26,16 @@ export default function EmailResponder() {
   const generateEmailResponse = async (emailId) => {
     setLoading(true);
     setThreadLoading(true);
-    setResponse("");
     setEditableResponse("");
     setThreadContext([]);
     try {
       const res = await fetch(`http://localhost:8000/generate_with_pdf?id=${emailId}`);
       const data = await res.json();
       setThreadContext(data.thread || []);
-      setResponse(data.response);
       setEditableResponse(data.response);
       setThreadLoading(false);
     } catch (error) {
-      setResponse("Error generating response.");
+      setEditableResponse("Error generating response.");
       setThreadContext([]);
       setThreadLoading(false);
       console.error("API call failed:", error);
