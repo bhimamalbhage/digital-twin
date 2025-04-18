@@ -67,10 +67,46 @@ async def fetch_latest_emails():
             subject = next((h["value"] for h in headers if h["name"] == "Subject"), "(No Subject)")
             sender = next((h["value"] for h in headers if h["name"] == "From"), "Unknown")
             snippet = msg_data.get("snippet", "")
-            emails.append({"id": msg["id"], "subject": subject, "from": sender, "snippet": snippet})
+            thread_id = msg_data.get("threadId")
+            
+            # Check for attachments
+            attachments = []
+            if "parts" in payload:
+                for part in payload.get("parts", []):
+                    if part.get("filename", "").endswith(".pdf"):
+                        attach_id = part.get("body", {}).get("attachmentId")
+                        if attach_id:
+                            attachments.append({
+                                "id": attach_id,
+                                "filename": part.get("filename")
+                            })
+            
+            emails.append({
+                "id": msg["id"], 
+                "subject": subject, 
+                "from": sender, 
+                "snippet": snippet, 
+                "threadId": thread_id,
+                "attachments": attachments
+            })
 
         return {"emails": emails}
 
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/email/attachment/{message_id}/{attachment_id}")
+async def get_attachment(message_id: str, attachment_id: str):
+    try:
+        service = build("gmail", "v1", credentials=gmail_creds)
+        attachment = service.users().messages().attachments().get(
+            userId="me", messageId=message_id, id=attachment_id
+        ).execute()
+        
+        pdf_data = b64.urlsafe_b64decode(attachment.get("data", ""))
+        pdf_base64 = b64.b64encode(pdf_data).decode("utf-8")
+        
+        return {"pdf": pdf_base64}
     except Exception as e:
         return {"error": str(e)}
 
@@ -83,8 +119,9 @@ async def generate_email_response(
     pdf_text = extract_text_from_pdf(pdf_bytes)
 
     prompt = f"""
-You are a professional email responder. Write a thoughtful and clear reply to the following incoming email.
-Include context from the related PDF document.
+You are my digital twin AI. Your task is to write a reply to the incoming email below using my unique writing style.
+Incorporate any useful context from the attached PDF document and knowledge from earlier messages in the same thread (if provided).
+Be concise, clear, and reflect how I normally communicate.
 
 Incoming Email:
 {email_text}
@@ -113,13 +150,46 @@ async def generate_response_using_gmail_data(id: str):
         service = build("gmail", "v1", credentials=gmail_creds)
         msg = service.users().messages().get(userId="me", id=id).execute()
 
-        snippet = msg.get("snippet", "")
-        parts = msg.get("payload", {}).get("parts", [])
-        pdf_data = None
+        latest_snippet = msg.get("snippet", "")
+        thread_id = msg.get("threadId")
 
-        for part in parts:
+        thread = service.users().threads().get(userId="me", id=thread_id).execute()
+        thread_messages = thread.get("messages", [])
+        thread_context = []
+        
+        for m in thread_messages:
+            m_data = {
+                "snippet": m.get("snippet", ""),
+                "id": m.get("id", ""),
+                "attachments": []
+            }
+            
+            # Extract any PDF attachments
+            payload = m.get("payload", {})
+            if "parts" in payload:
+                for part in payload.get("parts", []):
+                    if part.get("filename", "").endswith(".pdf"):
+                        attach_id = part.get("body", {}).get("attachmentId")
+                        if attach_id:
+                            m_data["attachments"].append({
+                                "id": attach_id,
+                                "filename": part.get("filename", "Unknown.pdf")
+                            })
+            
+            thread_context.append(m_data)
+
+        # Create a text-only version of the thread context for the prompt
+        thread_text = ""
+        for m in thread_context:
+            thread_text += f"\n---\n{m['snippet']}"
+
+        # Get the PDF from the current message if it exists
+        pdf_data = None
+        pdf_filename = "Attachment.pdf"
+        for part in msg.get("payload", {}).get("parts", []):
             if part.get("filename", "").endswith(".pdf"):
                 attach_id = part.get("body", {}).get("attachmentId")
+                pdf_filename = part.get("filename", "Attachment.pdf")
                 if attach_id:
                     attachment = service.users().messages().attachments().get(
                         userId="me", messageId=id, id=attach_id
@@ -128,19 +198,23 @@ async def generate_response_using_gmail_data(id: str):
                     break
 
         pdf_text = extract_text_from_pdf(pdf_data) if pdf_data else ""
+        pdf_base64 = b64.b64encode(pdf_data).decode("utf-8") if pdf_data else ""
 
         prompt = f"""
-You are a digital twin AI assistant that writes professional email replies on my behalf, mimicking my unique writing style. 
-Use available context from the email thread and, if provided, any PDF attachments to craft a thoughtful, informed, and clear reply.
+You are my digital twin AI. You write replies to incoming emails using my unique writing style. 
+Use the full email thread for context, and also incorporate any relevant content from attached PDFs.
+Your tone should be natural, thoughtful, and consistent with how I write.
 
-Incoming Email:
-{snippet}
+Email Thread:
+{thread_text}
 
+Most Recent Message:
+{latest_snippet}
 """
         if pdf_text:
-            prompt += f"PDF Summary:\n{pdf_text}\n\n"
+            prompt += f"\nPDF Summary:\n{pdf_text}\n"
 
-        prompt += "Your Reply:\n"
+        prompt += "\nYour Reply:\n"
 
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -148,11 +222,17 @@ Incoming Email:
             temperature=0.7,
         )
         reply_text = response.choices[0].message.content.strip()
-        return {"response": reply_text}
+        return {
+            "response": reply_text,
+            "thread": thread_context,
+            "pdf": pdf_base64,
+            "pdfFilename": pdf_filename
+        }
 
     except Exception as e:
         return {"response": f"Error: {str(e)}"}
-    
+
+
 @app.post("/send")
 async def send_email(to: str = Form(...), subject: str = Form(...), body: str = Form(...)):
     try:

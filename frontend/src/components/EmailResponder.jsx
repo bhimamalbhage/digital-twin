@@ -4,7 +4,12 @@ export default function EmailResponder() {
   const [emails, setEmails] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [response, setResponse] = useState("");
+  const [editableResponse, setEditableResponse] = useState("");
+  const [threadContext, setThreadContext] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [threadLoading, setThreadLoading] = useState(false);
+  const [attachmentLoadingId, setAttachmentLoadingId] = useState(null);
+  const [toast, setToast] = useState(null);
 
   useEffect(() => {
     const fetchEmails = async () => {
@@ -21,69 +26,224 @@ export default function EmailResponder() {
 
   const generateEmailResponse = async (emailId) => {
     setLoading(true);
+    setThreadLoading(true);
     setResponse("");
+    setEditableResponse("");
+    setThreadContext([]);
     try {
       const res = await fetch(`http://localhost:8000/generate_with_pdf?id=${emailId}`);
       const data = await res.json();
+      setThreadContext(data.thread || []);
       setResponse(data.response);
+      setEditableResponse(data.response);
+      setThreadLoading(false);
     } catch (error) {
       setResponse("Error generating response.");
+      setThreadContext([]);
+      setThreadLoading(false);
       console.error("API call failed:", error);
     } finally {
       setLoading(false);
     }
   };
 
+  const sendEmail = async () => {
+    if (!selectedEmail || !editableResponse.trim()) return;
+
+    const formData = new FormData();
+    formData.append("to", selectedEmail.from);
+    formData.append("subject", `Re: ${selectedEmail.subject}`);
+    formData.append("body", editableResponse);
+
+    try {
+      const res = await fetch("http://localhost:8000/send", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (data.status === "sent") {
+        showToast("Reply sent successfully!", "success");
+      } else {
+        showToast("Failed to send reply.", "error");
+      }
+    } catch (error) {
+      showToast("Error sending email.", "error");
+      console.error("Send error:", error);
+    }
+  };
+
+  const fetchAttachment = async (messageId, attachmentId) => {
+    setAttachmentLoadingId(attachmentId);
+    try {
+      const res = await fetch(`http://localhost:8000/email/attachment/${messageId}/${attachmentId}`);
+      const data = await res.json();
+      if (data.pdf) {
+        const pdfWindow = window.open();
+        pdfWindow.document.write(`
+          <html>
+            <head>
+              <title>PDF Viewer</title>
+              <style>body { margin: 0; }</style>
+            </head>
+            <body>
+              <iframe src="data:application/pdf;base64,${data.pdf}" width="100%" height="100%" style="border: none;"></iframe>
+            </body>
+          </html>
+        `);
+      }
+    } catch (error) {
+      console.error("Error fetching attachment:", error);
+      showToast("Failed to open PDF attachment", "error");
+    } finally {
+      setAttachmentLoadingId(null);
+    }
+  };
+
+  const showToast = (message, type = "info") => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
   return (
-    <div style={{ maxWidth: "800px", margin: "0 auto", padding: "1rem" }}>
-      <h2>📥 Unread Emails</h2>
-
-      {emails.length === 0 ? (
-        <p>No unread emails found.</p>
-      ) : (
-        <ul style={{ listStyle: "none", padding: 0 }}>
-          {emails.map((email) => (
-            <li
-              key={email.id}
-              onClick={() => {
-                setSelectedEmail(email);
-                generateEmailResponse(email.id);
-              }}
-              style={{
-                padding: "0.5rem",
-                margin: "0.5rem 0",
-                background: selectedEmail?.id === email.id ? "#dfefff" : "#f4f4f4",
-                borderRadius: "6px",
-                cursor: "pointer",
-              }}
-            >
-              <strong>{email.subject}</strong> <br />
-              <span style={{ fontSize: "0.9em", color: "#555" }}>{email.from}</span>
-              <div style={{ fontSize: "0.9em", color: "#777", marginTop: "0.3rem" }}>{email.snippet}</div>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {selectedEmail && (
-        <div style={{ marginTop: "2rem" }}>
-          <h3>AI-Generated Response</h3>
-          {loading ? (
-            <p>Generating...</p>
-          ) : (
-            <pre
-              style={{
-                backgroundColor: "#f0f0f0",
-                padding: "1rem",
-                whiteSpace: "pre-wrap",
-                borderRadius: "6px",
-              }}
-            >
-              {response}
-            </pre>
-          )}
+    <div style={{ display: "flex", maxWidth: "100%", height: "100vh", padding: "1rem", boxSizing: "border-box", position: "relative" }}>
+      {/* Toast */}
+      {toast && (
+        <div style={{
+          position: "absolute",
+          top: "1rem",
+          right: "1rem",
+          padding: "0.75rem 1rem",
+          borderRadius: "6px",
+          backgroundColor: toast.type === "success" ? "#2ecc71" : "#e74c3c",
+          color: "white",
+          boxShadow: "0 2px 6px rgba(0,0,0,0.2)"
+        }}>
+          {toast.message}
         </div>
       )}
+
+      {/* Left Panel: Email List */}
+      <div style={{ width: "50%", borderRight: "1px solid #ddd", paddingRight: "1rem"}}>
+        <h2>📩 Unread Emails</h2>
+        {emails.length === 0 ? (
+          <p>No unread emails found.</p>
+        ) : (
+          <ul style={{ listStyle: "none", padding: 0 }}>
+            {emails.map((email) => (
+              <li
+                key={email.id}
+                onClick={() => {
+                  setSelectedEmail(email);
+                  generateEmailResponse(email.id);
+                }}
+                style={{
+                  padding: "0.5rem",
+                  margin: "0.5rem 0",
+                  background: selectedEmail?.id === email.id ? "#dfefff" : "#f4f4f4",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                }}
+              >
+                <strong>{email.subject}</strong><br />
+                <span style={{ fontSize: "0.9em", color: "#555" }}>{email.from}</span>
+                <div style={{ fontSize: "0.9em", color: "#777", marginTop: "0.3rem" }}>{email.snippet}</div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Right Panel */}
+      <div style={{ flex: 1, paddingLeft: "1rem", paddingRight: "1rem", width: "50%", }}>
+        {selectedEmail ? (
+          <>
+            <h3>🧠 Thread Context</h3>
+            <div style={{
+              backgroundColor: "#fafafa",
+              padding: "1rem",
+              borderRadius: "6px",
+              border: "1px solid #ddd",
+              fontSize: "0.9rem",
+              maxHeight: "300px",
+              overflowY: "auto",
+            }}>
+              {threadLoading ? (
+                <p>Loading thread...</p>
+              ) : Array.isArray(threadContext) ? (
+                threadContext.map((msg, idx) => (
+                  <div key={idx} style={{ marginBottom: "1rem" }}>
+                    <div style={{ whiteSpace: "pre-wrap" }}>{msg.snippet}</div>
+                    {msg.attachments && msg.attachments.map((att, i) => (
+                      <button
+                        key={i}
+                        onClick={() => fetchAttachment(msg.id, att.id)}
+                        disabled={attachmentLoadingId === att.id}
+                        style={{
+                          marginTop: "0.5rem",
+                          marginRight: "0.5rem",
+                          padding: "0.3rem 0.6rem",
+                          fontSize: "0.8rem",
+                          backgroundColor: "#eee",
+                          border: "1px solid #ccc",
+                          borderRadius: "4px",
+                          cursor: "pointer"
+                        }}
+                      >
+                        {attachmentLoadingId === att.id ? "Opening..." : `📎 ${att.filename}`}
+                      </button>
+                    ))}
+                  </div>
+                ))
+              ) : (
+                <pre style={{ whiteSpace: "pre-wrap" }}>{threadContext}</pre>
+              )}
+            </div>
+
+              <div style={{ marginRight: "2rem" }}>
+
+            <h3 style={{ marginTop: "2rem" }}>🤖 AI-Generated Response</h3>
+            {loading ? (
+              <p>Generating response...</p>
+            ) : (
+              <>
+                <textarea
+                  value={editableResponse}
+                  onChange={(e) => setEditableResponse(e.target.value)}
+                  rows={12}
+                  style={{
+                    width: "100%",
+                    padding: "1rem",
+                    fontFamily: "monospace",
+                    backgroundColor: "#f0f0f0",
+                    borderRadius: "6px",
+                    border: "1px solid #ccc",
+                    whiteSpace: "pre-wrap",
+                  }}
+                />
+                <button
+                  onClick={sendEmail}
+                  style={{
+                    marginTop: "1rem",
+                    padding: "0.5rem 1rem",
+                    fontSize: "1rem",
+                    backgroundColor: "#3498db",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "4px",
+                    cursor: "pointer",
+                  }}
+                >
+                  📤 Send Reply
+                </button>
+              </>
+            )}
+            </div>
+
+          </>
+        ) : (
+          <p>Select an email to view details.</p>
+        )}
+      </div>
     </div>
   );
 }
