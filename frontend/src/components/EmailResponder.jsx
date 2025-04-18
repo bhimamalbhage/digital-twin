@@ -3,11 +3,9 @@ import React, { useState, useEffect } from "react";
 export default function EmailResponder() {
   const [emails, setEmails] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
-  const [pdfFile, setPdfFile] = useState(null);
   const [response, setResponse] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Fetch emails from backend
   useEffect(() => {
     const fetchEmails = async () => {
       try {
@@ -21,26 +19,11 @@ export default function EmailResponder() {
     fetchEmails();
   }, []);
 
-  const handlePdfUpload = (e) => {
-    setPdfFile(e.target.files[0]);
-  };
-
-  const generateEmailResponse = async () => {
-    if (!selectedEmail || !pdfFile) return;
-
-    const formData = new FormData();
-    formData.append("email_text", selectedEmail.snippet);
-    formData.append("pdf", pdfFile);
-
+  const generateEmailResponse = async (emailId) => {
     setLoading(true);
     setResponse("");
-
     try {
-      const res = await fetch("http://localhost:8000/generate", {
-        method: "POST",
-        body: formData,
-      });
-
+      const res = await fetch(`http://localhost:8000/generate_with_pdf?id=${emailId}`);
       const data = await res.json();
       setResponse(data.response);
     } catch (error) {
@@ -62,7 +45,10 @@ export default function EmailResponder() {
           {emails.map((email) => (
             <li
               key={email.id}
-              onClick={() => setSelectedEmail(email)}
+              onClick={() => {
+                setSelectedEmail(email);
+                generateEmailResponse(email.id);
+              }}
               style={{
                 padding: "0.5rem",
                 margin: "0.5rem 0",
@@ -81,40 +67,20 @@ export default function EmailResponder() {
 
       {selectedEmail && (
         <div style={{ marginTop: "2rem" }}>
-          <h3>Selected Email Preview</h3>
-          <p><strong>Subject:</strong> {selectedEmail.subject}</p>
-          <p><strong>From:</strong> {selectedEmail.from}</p>
-          <p><strong>Snippet:</strong> {selectedEmail.snippet}</p>
-
-          <input
-            type="file"
-            accept="application/pdf"
-            onChange={handlePdfUpload}
-            style={{ display: "block", marginTop: "1rem", marginBottom: "1rem" }}
-          />
-
-          <button
-            onClick={generateEmailResponse}
-            disabled={!pdfFile || loading}
-            style={{ padding: "0.5rem 1rem" }}
-          >
-            {loading ? "Generating Response..." : "Generate Response"}
-          </button>
-
-          {response && (
-            <div style={{ marginTop: "2rem" }}>
-              <h3>AI-Generated Response</h3>
-              <pre
-                style={{
-                  backgroundColor: "#f0f0f0",
-                  padding: "1rem",
-                  whiteSpace: "pre-wrap",
-                  borderRadius: "6px",
-                }}
-              >
-                {response}
-              </pre>
-            </div>
+          <h3>AI-Generated Response</h3>
+          {loading ? (
+            <p>Generating...</p>
+          ) : (
+            <pre
+              style={{
+                backgroundColor: "#f0f0f0",
+                padding: "1rem",
+                whiteSpace: "pre-wrap",
+                borderRadius: "6px",
+              }}
+            >
+              {response}
+            </pre>
           )}
         </div>
       )}

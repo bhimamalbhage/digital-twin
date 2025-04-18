@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+import base64 as b64
 
 # Load .env variables
 load_dotenv()
@@ -106,6 +107,52 @@ Your Reply:
 
     return {"response": reply_text}
 
+@app.get("/generate_with_pdf")
+async def generate_response_using_gmail_data(id: str):
+    try:
+        service = build("gmail", "v1", credentials=gmail_creds)
+        msg = service.users().messages().get(userId="me", id=id).execute()
+
+        snippet = msg.get("snippet", "")
+        parts = msg.get("payload", {}).get("parts", [])
+        pdf_data = None
+
+        for part in parts:
+            if part.get("filename", "").endswith(".pdf"):
+                attach_id = part.get("body", {}).get("attachmentId")
+                if attach_id:
+                    attachment = service.users().messages().attachments().get(
+                        userId="me", messageId=id, id=attach_id
+                    ).execute()
+                    pdf_data = b64.urlsafe_b64decode(attachment.get("data", ""))
+                    break
+
+        pdf_text = extract_text_from_pdf(pdf_data) if pdf_data else ""
+
+        prompt = f"""
+You are a digital twin AI assistant that writes professional email replies on my behalf, mimicking my unique writing style. 
+Use available context from the email thread and, if provided, any PDF attachments to craft a thoughtful, informed, and clear reply.
+
+Incoming Email:
+{snippet}
+
+"""
+        if pdf_text:
+            prompt += f"PDF Summary:\n{pdf_text}\n\n"
+
+        prompt += "Your Reply:\n"
+
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+        )
+        reply_text = response.choices[0].message.content.strip()
+        return {"response": reply_text}
+
+    except Exception as e:
+        return {"response": f"Error: {str(e)}"}
+    
 @app.post("/send")
 async def send_email(to: str = Form(...), subject: str = Form(...), body: str = Form(...)):
     try:
