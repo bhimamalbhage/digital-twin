@@ -1,0 +1,42 @@
+[
+  {
+    "context": "Thanks for the opportunity. I'd love to connect further.",
+    "reply": "Thank you for getting in touch. I’d be glad to discuss this further and explore ways we can collaborate."
+  },
+  {
+    "context": "Can we reschedule our meeting?",
+    "reply": "Sure, I understand things come up. Let me know what time works better for you."
+  },
+  {
+    "context": "Is the position still open?",
+    "reply": "Thanks for checking in. The position is currently open, and we’re still reviewing candidates."
+  },
+  {
+    "context": "Please find my resume attached.",
+    "reply": "Appreciate you sending your resume. I’ll take a look and get back to you soon."
+  },
+  {
+    "context": "I have a few questions about the role.",
+    "reply": "Feel free to send over your questions — happy to clarify anything you need."
+  },
+  {
+    "context": "It was great speaking with you earlier.",
+    "reply": "Likewise, I enjoyed our conversation and look forward to staying in touch."
+  },
+  {
+    "context": "Just following up on my previous email.",
+    "reply": "Thanks for the nudge. I’ll review it and get back to you shortly."
+  },
+  {
+    "context": "Can we talk tomorrow?",
+    "reply": "Tomorrow works for me. Let me know what time suits you best."
+  },
+  {
+    "context": "Looking forward to hearing from you.",
+    "reply": "Appreciate your patience — I’ll be in touch soon."
+  },
+  {
+    "context": "Let me know if you need anything else.",
+    "reply": "Absolutely — feel free to reach out if there's anything I can assist with."
+  }
+]

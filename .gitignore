@@ -19,6 +19,12 @@ __pycache__/
 *.py[cod]
 venv/
 
+# Virtual Environment
+venv/
+.venv/
+ENV/
+env/
+
 # IDE
 .vscode/
 .idea/

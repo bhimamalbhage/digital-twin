@@ -9,6 +9,7 @@ export default function EmailResponder() {
   const [threadLoading, setThreadLoading] = useState(false);
   const [attachmentLoadingId, setAttachmentLoadingId] = useState(null);
   const [toast, setToast] = useState(null);
+  const [usedPdfFilename, setUsedPdfFilename] = useState("");
 
   useEffect(() => {
     const fetchEmails = async () => {
@@ -23,24 +24,47 @@ export default function EmailResponder() {
     fetchEmails();
   }, []);
 
-  const generateEmailResponse = async (emailId) => {
+  const generateEmailResponse = async (email) => {
+    setSelectedEmail(email);
     setLoading(true);
     setThreadLoading(true);
     setEditableResponse("");
     setThreadContext([]);
+    setUsedPdfFilename("");
+
     try {
-      const res = await fetch(`http://localhost:8000/generate_with_pdf?id=${emailId}`);
-      const data = await res.json();
-      setThreadContext(data.thread || []);
-      setEditableResponse(data.response);
-      setThreadLoading(false);
+      // fetch thread + PDF
+      const threadRes = await fetch(
+        `http://localhost:8000/generate_with_pdf?id=${email.id}`
+      );
+      const threadData = await threadRes.json();
+
+      // convert base64 → File
+      // const pdfBase64 = threadData.pdf;
+      const pdfFilename = threadData.pdfFilename || "";
+      // const byteCharacters = atob(pdfBase64);
+      // const byteNumbers = Array.from(byteCharacters).map((c) =>
+      //   c.charCodeAt(0)
+      // );
+      // const pdfFile = new File(
+      //   [new Uint8Array(byteNumbers)],
+      //   pdfFilename,
+      //   { type: "application/pdf" }
+      // );
+
+      setEditableResponse(
+        threadData.response ?? threadData.response ?? ""
+      );
+      setThreadContext(threadData.thread);
+      setUsedPdfFilename(pdfFilename);
+      showToast("Reply generated successfully", "success");
     } catch (error) {
+      console.error("Error generating response:", error);
+      showToast("Error generating response.", "error");
       setEditableResponse("Error generating response.");
-      setThreadContext([]);
-      setThreadLoading(false);
-      console.error("API call failed:", error);
     } finally {
       setLoading(false);
+      setThreadLoading(false);
     }
   };
 
@@ -78,10 +102,7 @@ export default function EmailResponder() {
         const pdfWindow = window.open();
         pdfWindow.document.write(`
           <html>
-            <head>
-              <title>PDF Viewer</title>
-              <style>body { margin: 0; }</style>
-            </head>
+            <head><title>PDF Viewer</title><style>body { margin: 0; }</style></head>
             <body>
               <iframe src="data:application/pdf;base64,${data.pdf}" width="100%" height="100%" style="border: none;"></iframe>
             </body>
@@ -103,7 +124,6 @@ export default function EmailResponder() {
 
   return (
     <div style={{ display: "flex", maxWidth: "100%", height: "100vh", padding: "1rem", boxSizing: "border-box", position: "relative" }}>
-      {/* Toast */}
       {toast && (
         <div style={{
           position: "absolute",
@@ -119,8 +139,7 @@ export default function EmailResponder() {
         </div>
       )}
 
-      {/* Left Panel: Email List */}
-      <div style={{ width: "50%", borderRight: "1px solid #ddd", paddingRight: "1rem"}}>
+      <div style={{ width: "50%", borderRight: "1px solid #ddd", paddingRight: "1rem" }}>
         <h2>📩 Unread Emails</h2>
         {emails.length === 0 ? (
           <p>No unread emails found.</p>
@@ -129,10 +148,7 @@ export default function EmailResponder() {
             {emails.map((email) => (
               <li
                 key={email.id}
-                onClick={() => {
-                  setSelectedEmail(email);
-                  generateEmailResponse(email.id);
-                }}
+                onClick={() => generateEmailResponse(email)}
                 style={{
                   padding: "0.5rem",
                   margin: "0.5rem 0",
@@ -150,8 +166,7 @@ export default function EmailResponder() {
         )}
       </div>
 
-      {/* Right Panel */}
-      <div style={{ flex: 1, paddingLeft: "1rem", paddingRight: "1rem", width: "50%", }}>
+      <div style={{ flex: 1, paddingLeft: "1rem", paddingRight: "1rem", width: "50%" }}>
         {selectedEmail ? (
           <>
             <h3>🧠 Thread Context</h3>
@@ -166,7 +181,7 @@ export default function EmailResponder() {
             }}>
               {threadLoading ? (
                 <p>Loading thread...</p>
-              ) : Array.isArray(threadContext) ? (
+              ) : (
                 threadContext.map((msg, idx) => (
                   <div key={idx} style={{ marginBottom: "1rem" }}>
                     <div style={{ whiteSpace: "pre-wrap" }}>{msg.snippet}</div>
@@ -191,12 +206,14 @@ export default function EmailResponder() {
                     ))}
                   </div>
                 ))
-              ) : (
-                <pre style={{ whiteSpace: "pre-wrap" }}>{threadContext}</pre>
               )}
             </div>
 
-              <div style={{ marginRight: "2rem" }}>
+            {usedPdfFilename && (
+              <div style={{ marginTop: "0.5rem", fontSize: "0.9rem" }}>
+                <strong>PDF Used:</strong> {usedPdfFilename}
+              </div>
+            )}
 
             <h3 style={{ marginTop: "2rem" }}>🤖 AI-Generated Response</h3>
             {loading ? (
@@ -234,8 +251,6 @@ export default function EmailResponder() {
                 </button>
               </>
             )}
-            </div>
-
           </>
         ) : (
           <p>Select an email to view details.</p>

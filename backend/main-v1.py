@@ -2,16 +2,12 @@ import os
 import base64
 import fitz  # PyMuPDF
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, Form, Request, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 import base64 as b64
-from pydantic import BaseModel
-from typing import Optional
-from autogen import AssistantAgent, UserProxyAgent
-import uvicorn
 
 # Load .env variables
 load_dotenv()
@@ -33,7 +29,7 @@ gmail_creds = Credentials(
     scopes=["https://www.googleapis.com/auth/gmail.modify"]
 )
 
-app = FastAPI(title="Email Assistant API")
+app = FastAPI()
 
 # Enable CORS for frontend
 app.add_middleware(
@@ -44,54 +40,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuration for AutoGen agents
-CONFIG = {
-    "model": "gpt-4",
-    "api_key": os.getenv("OPENAI_API_KEY")
-}
-
-# User Style Profile
-USER_STYLE = {
-    "tone": "professional but friendly",
-    "length": "concise and short",
-    # "formatting": "bullet points for key items",
-    # "phrases_to_avoid": ["kindly", "please be advised", "at your earliest convenience"],
-    "preferred_signature": "Best regards,\nEthan Hunt",
-    # "key_phrases": ["I hope this helps", "Let me know if you have any questions"]
-}
-
-# Initialize Agents
-writer_agent = AssistantAgent(
-    name="WriterAgent",
-    system_message="""You are an email response generator. Create a professional reply to the given email.
-    Focus on:
-    - Accurate content response
-    - Clear communication
-    - Appropriate level of detail
-    Don't worry about specific styling - that will be handled separately.""",
-    llm_config={"config_list": [CONFIG]}
-)
-
-review_agent = AssistantAgent(
-    name="ReviewAgent",
-    system_message=f"""You are a draft email improver. Rewrite the email draft to perfectly match these style guidelines:
-    {USER_STYLE}
-    Your output should:
-    1. Maintain all original content meaning
-    2. Apply all style rules exactly
-    3. Return ONLY the final version (no commentary)
-    """,
-    llm_config={"config_list": [CONFIG]}
-)
-
-user_proxy = UserProxyAgent(
-    name="UserProxy",
-    human_input_mode="NEVER",
-    max_consecutive_auto_reply=0,
-    code_execution_config=False
-)
-
-# Helper Functions
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     text = ""
@@ -104,47 +52,6 @@ def create_email_raw(to: str, subject: str, body: str) -> str:
     raw = base64.urlsafe_b64encode(message.encode("utf-8")).decode("utf-8")
     return raw
 
-def generate_reply_with_agents(email_content: str, pdf_text: str = "") -> dict:
-    try:
-        # Reset agents
-        writer_agent.reset()
-        review_agent.reset()
-        
-        # Combine email content and PDF text for context
-        full_context = f"Email to reply to:\n{email_content}"
-        if pdf_text:
-            full_context += f"\n\nAdditional context from attached PDF:\n{pdf_text}"
-        
-        # Generate content-focused draft
-        user_proxy.initiate_chat(
-            writer_agent,
-            message=f"Please draft a content-appropriate reply to this email:\n{full_context}"
-        )
-        draft = writer_agent.last_message()["content"]
-        
-        # Get styled version
-        user_proxy.initiate_chat(
-            review_agent,
-            message=f"Rewrite this to match our style guide:\n{draft}"
-        )
-        final_reply = review_agent.last_message()["content"]
-        
-        return {
-            "draft_reply": draft,
-            "review_feedback": "Automatically styled to match guidelines",
-            "final_reply": final_reply
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# API Models
-class EmailResponse(BaseModel):
-    draft_reply: str
-    review_feedback: str
-    final_reply: str
-
-# API Endpoints
 @app.get("/emails")
 async def fetch_latest_emails():
     try:
@@ -206,18 +113,36 @@ async def get_attachment(message_id: str, attachment_id: str):
 @app.post("/generate")
 async def generate_email_response(
     email_text: str = Form(...),
-    pdf: UploadFile = File(None)
+    pdf: UploadFile = File(...)
 ):
-    pdf_text = ""
-    if pdf:
-        pdf_bytes = await pdf.read()
-        pdf_text = extract_text_from_pdf(pdf_bytes)
+    pdf_bytes = await pdf.read()
+    pdf_text = extract_text_from_pdf(pdf_bytes)
+
+    prompt = f"""
+You are my digital twin AI. Your task is to write a reply to the incoming email below using my unique writing style.
+Incorporate any useful context from the attached PDF document and knowledge from earlier messages in the same thread (if provided).
+Be concise, clear, and reflect how I normally communicate.
+
+Incoming Email:
+{email_text}
+
+PDF Summary:
+{pdf_text}
+
+Your Reply:
+"""
 
     try:
-        response = generate_reply_with_agents(email_text, pdf_text)
-        return response
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+        )
+        reply_text = response.choices[0].message.content.strip()
     except Exception as e:
-        return {"error": str(e)}
+        return {"response": f"Error: {str(e)}"}
+
+    return {"response": reply_text}
 
 @app.get("/generate_with_pdf")
 async def generate_response_using_gmail_data(id: str):
@@ -253,7 +178,7 @@ async def generate_response_using_gmail_data(id: str):
             
             thread_context.append(m_data)
 
-        # Create a text-only version of the thread context
+        # Create a text-only version of the thread context for the prompt
         thread_text = ""
         for m in thread_context:
             thread_text += f"\n---\n{m['snippet']}"
@@ -273,23 +198,40 @@ async def generate_response_using_gmail_data(id: str):
                     break
 
         pdf_text = extract_text_from_pdf(pdf_data) if pdf_data else ""
-        
-        # Generate reply using AutoGen agents
-        response = generate_reply_with_agents(
-            email_content=f"Email Thread Context:\n{thread_text}\n\nLatest Message:\n{latest_snippet}",
-            pdf_text=pdf_text
+        pdf_base64 = b64.b64encode(pdf_data).decode("utf-8") if pdf_data else ""
+
+        prompt = f"""
+You are my digital twin AI. You write replies to incoming emails using my unique writing style. 
+Use the full email thread for context, and also incorporate any relevant content from attached PDFs.
+Your tone should be natural, thoughtful, and consistent with how I write.
+
+Email Thread:
+{thread_text}
+
+Most Recent Message:
+{latest_snippet}
+"""
+        if pdf_text:
+            prompt += f"\nPDF Summary:\n{pdf_text}\n"
+
+        prompt += "\nYour Reply:\n"
+
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
         )
-        
+        reply_text = response.choices[0].message.content.strip()
         return {
-            "response": response["final_reply"],
-            "draft": response["draft_reply"],
+            "response": reply_text,
             "thread": thread_context,
-            "pdf": b64.b64encode(pdf_data).decode("utf-8") if pdf_data else "",
+            "pdf": pdf_base64,
             "pdfFilename": pdf_filename
         }
 
     except Exception as e:
-        return {"error": str(e)}
+        return {"response": f"Error: {str(e)}"}
+
 
 @app.post("/send")
 async def send_email(to: str = Form(...), subject: str = Form(...), body: str = Form(...)):
@@ -301,6 +243,3 @@ async def send_email(to: str = Form(...), subject: str = Form(...), body: str = 
         return {"status": "sent", "id": send_result["id"]}
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
