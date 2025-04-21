@@ -12,16 +12,23 @@ from pydantic import BaseModel
 from typing import Optional
 from autogen import AssistantAgent, UserProxyAgent
 import uvicorn
-from sklearn.feature_extraction.text import TfidfVectorizer
+import pytesseract
+from PIL import Image
+import io
 import numpy as np
-import nltk
-from nltk.tokenize import sent_tokenize
-
+import re
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import KMeans
+import tempfile
 
 # Load .env variables
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key)
+
+# Configure Tesseract path if needed
+if os.getenv("TESSERACT_PATH"):
+    pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_PATH")
 
 # Gmail API Setup
 gmail_token = os.getenv("GMAIL_ACCESS_TOKEN")
@@ -59,10 +66,7 @@ CONFIG = {
 USER_STYLE = {
     "tone": "professional but friendly",
     "length": "concise and short",
-    # "formatting": "bullet points for key items",
-    # "phrases_to_avoid": ["kindly", "please be advised", "at your earliest convenience"],
-    "preferred_signature": "Best regards,\nDigital Twin",
-    # "key_phrases": ["I hope this helps", "Let me know if you have any questions"]
+    "preferred_signature": "Best regards,\nEthan Hunt",
 }
 
 # Initialize Agents
@@ -96,43 +100,124 @@ user_proxy = UserProxyAgent(
     code_execution_config=False
 )
 
-nltk.download('punkt')
+class PDFProcessor:
+    def __init__(self, max_text_length=10000, ocr_threshold=0.1):
+        self.max_text_length = max_text_length
+        self.ocr_threshold = ocr_threshold  # Ratio of text to consider using OCR
+        
+    def extract_text(self, pdf_bytes: bytes) -> str:
+        """Main method to extract and process text from PDF"""
+        with tempfile.NamedTemporaryFile(delete=True) as tmp:
+            tmp.write(pdf_bytes)
+            tmp.flush()
+            
+            # First try standard text extraction
+            text = self._extract_with_pymupdf(tmp.name)
+            
+            # Check if we need OCR (too little text extracted)
+            if len(text.split()) / max(1, self._count_pdf_pages(tmp.name)) < 100:  # Less than 100 words per page
+                ocr_text = self._extract_with_ocr(tmp.name)
+                if len(ocr_text) > len(text):  # Use OCR if it got more text
+                    text = ocr_text
+                    
+        # Process and prioritize the extracted text
+        return self._process_extracted_text(text)
+    
+    def _extract_with_pymupdf(self, filepath: str) -> str:
+        """Extract text using PyMuPDF's built-in methods"""
+        doc = fitz.open(filepath)
+        text = []
+        for page in doc:
+            text.append(page.get_text("text"))
+        return "\n".join(text)
+    
+    def _extract_with_ocr(self, filepath: str) -> str:
+        """Extract text from scanned PDFs using OCR"""
+        doc = fitz.open(filepath)
+        text = []
+        
+        for page in doc:
+            # Get page as image
+            pix = page.get_pixmap()
+            img = Image.open(io.BytesIO(pix.tobytes("ppm")))
+            
+            # Use Tesseract OCR
+            page_text = pytesseract.image_to_string(img)
+            text.append(page_text)
+            
+        return "\n".join(text)
+    
+    def _count_pdf_pages(self, filepath: str) -> int:
+        """Count pages in PDF"""
+        doc = fitz.open(filepath)
+        return len(doc)
+    
+    def _process_extracted_text(self, text: str) -> str:
+        """Process and prioritize extracted text"""
+        # Clean text
+        text = self._clean_text(text)
+        
+        # If text is too long, extract most important sections
+        if len(text) > self.max_text_length:
+            return self._summarize_large_text(text)
+        return text
+    
+    def _clean_text(self, text: str) -> str:
+        """Clean and normalize extracted text"""
+        # Remove excessive whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Remove common PDF artifacts
+        artifacts = [
+            r'\x0c',  # Form feed
+            r'\uf0b7',  # Bullet point variants
+            r'\u2022',  # Bullet point
+            r'\u25cf',  # Black circle
+        ]
+        for artifact in artifacts:
+            text = text.replace(artifact, '')
+            
+        return text
+    
+    def _summarize_large_text(self, text: str) -> str:
+        """Extract key sections from large text using TF-IDF and clustering"""
+        # Split text into paragraphs
+        paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
+        
+        # If still too large, use first N paragraphs
+        if len(paragraphs) > 50:
+            return "\n".join(paragraphs[:50]) + "\n\n[Document truncated - showing first 50 paragraphs]"
+            
+        # Vectorize text if we have enough paragraphs
+        if len(paragraphs) >= 5:
+            try:
+                vectorizer = TfidfVectorizer(stop_words='english')
+                X = vectorizer.fit_transform(paragraphs)
+                
+                # Cluster paragraphs
+                n_clusters = min(5, len(paragraphs))
+                kmeans = KMeans(n_clusters=n_clusters, random_state=42).fit(X)
+                
+                # Find paragraphs closest to cluster centers
+                closest = []
+                for i in range(n_clusters):
+                    distances = np.linalg.norm(X.toarray() - kmeans.cluster_centers_[i], axis=1)
+                    closest_idx = np.argmin(distances)
+                    closest.append(paragraphs[closest_idx])
+                    
+                return "Key sections from document:\n\n" + "\n\n".join(closest)
+            except Exception as e:
+                # Fallback if ML processing fails
+                return "\n".join(paragraphs[:50]) + "\n\n[Document processed with fallback method]"
+        else:
+            return "\n".join(paragraphs)
 
-def summarize_text(text: str, max_sentences: int = 10) -> str:
-    """
-    Simple extractive summarization using TF-IDF and sentence importance scoring
-    """
-    sentences = sent_tokenize(text)
-    if len(sentences) <= max_sentences:
-        return text  # No need to summarize if already short
-    
-    # Create TF-IDF matrix
-    vectorizer = TfidfVectorizer(stop_words='english')
-    tfidf_matrix = vectorizer.fit_transform(sentences)
-    
-    # Calculate sentence importance scores
-    sentence_scores = np.array(tfidf_matrix.sum(axis=1)).flatten()
-    
-    # Get top N sentences
-    top_sentence_indices = sentence_scores.argsort()[-max_sentences:][::-1]
-    top_sentences = [sentences[i] for i in sorted(top_sentence_indices)]
-    
-    return ' '.join(top_sentences)
+# Initialize PDF processor
+pdf_processor = PDFProcessor()
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
-    """Extract text from PDF with optional summarization for long documents"""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    text = text.strip()
-    
-    # Simple word count check (approximate)
-    word_count = len(text.split())
-    if word_count > 1000:
-        return summarize_text(text)
-    return text
-
+    """Enhanced PDF text extraction with OCR fallback and large document handling"""
+    return pdf_processor.extract_text(pdf_bytes)
 
 def create_email_raw(to: str, subject: str, body: str) -> str:
     message = f"To: {to}\r\nSubject: {subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}"
