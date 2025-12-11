@@ -1,4 +1,4 @@
-# 📧 Digital Twin Email Assistant
+# 📧 Digital Twin - AI-powered Email Assistant
 
 An AI-powered email assistant that generates context-aware responses while maintaining your personal writing style.
 
